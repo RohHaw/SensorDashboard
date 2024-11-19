@@ -1,5 +1,14 @@
-// next.config.js
-module.exports = {
-  reactStrictMode: true,  // Optional: helps with debugging React issues
-  // Remove or update any deprecated/experimental settings
-};
+/** @type {import('next').NextConfig} */
+const nextConfig = {
+  reactStrictMode: true,
+  swcMinify: true,
+  compiler: {
+    // Enables the styled-components plugin
+    styledComponents: true,
+  },
+  // Enable App Router
+  experimental: { 
+  },
+}
+
+module.exports = nextConfig
