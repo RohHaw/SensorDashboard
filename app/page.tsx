@@ -153,13 +153,17 @@ export default function Home() {
           const updated = { ...prev };
           data.forEach(reading => {
             if (!updated[reading.sensor_id]) updated[reading.sensor_id] = [];
-            updated[reading.sensor_id] = [
-              ...updated[reading.sensor_id],
-              { ...reading, timestamp: new Date(reading.timestamp).toISOString() }
-            ].slice(-100);
+            const lastReading = updated[reading.sensor_id].slice(-1)[0];
+            if (!lastReading || lastReading.timestamp !== reading.timestamp) {
+              updated[reading.sensor_id] = [
+                ...updated[reading.sensor_id],
+                { ...reading, timestamp: new Date(reading.timestamp).toISOString() }
+              ].slice(-100);
+            }
           });
           return updated;
         });
+        
       } catch (err) {
         console.error("Fetch error:", err);
         setError(err instanceof Error ? err.message : "An error occurred");
@@ -169,7 +173,7 @@ export default function Home() {
     };
 
     fetchData();
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
   }, []);
 
