@@ -19,8 +19,14 @@ import {
   Gauge,
   Clock,
   CloudFog,
-  AlertCircle
+  AlertCircle,
+  Bell,
+  X
 } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Badge } from "@/components/ui/badge";
 
 ChartJS.register(
   CategoryScale,
@@ -43,12 +49,26 @@ interface SensorReading {
   air_quality_index: number;
 }
 
+interface Warning {
+  id: string;
+  sensorId: string;
+  message: string;
+  timestamp: string;
+  type: 'temperature' | 'co2';
+  value: number;
+}
+
+const TEMP_THRESHOLD = 35;
+const CO2_THRESHOLD = 1000;
+const WARNING_RETENTION_TIME = 60 * 60 * 1000; // 1 hour in milliseconds
+const MAX_WARNINGS = 50;
+
 const getStatusColor = (value: number, type: string): string => {
   switch(type) {
     case 'temperature':
-      return value > 25 ? 'text-red-500' : value < 18 ? 'text-blue-500' : 'text-emerald-500';
+      return value > TEMP_THRESHOLD ? 'text-red-500' : value > 25 ? 'text-amber-500' : value < 18 ? 'text-blue-500' : 'text-emerald-500';
     case 'co2':
-      return value > 1000 ? 'text-red-500' : value > 800 ? 'text-amber-500' : 'text-emerald-500';
+      return value > CO2_THRESHOLD ? 'text-red-500' : value > 800 ? 'text-amber-500' : 'text-emerald-500';
     case 'humidity':
       return value > 70 ? 'text-red-500' : value < 30 ? 'text-amber-500' : 'text-emerald-500';
     case 'noise':
@@ -58,6 +78,65 @@ const getStatusColor = (value: number, type: string): string => {
     default:
       return 'text-slate-700';
   }
+};
+
+const NotificationBell = ({ warnings }: { warnings: Warning[] }) => {
+  const activeWarnings = warnings.length;
+  
+  return (
+    <Sheet>
+      <SheetTrigger asChild>
+        <button className="fixed top-4 right-4 p-2 bg-white rounded-full shadow-lg hover:shadow-xl transition-all duration-300 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50">
+          <div className="relative">
+            <Bell className="h-6 w-6 text-slate-600" />
+            {activeWarnings > 0 && (
+              <Badge variant="destructive" className="absolute top-0 right-0 transform translate-x-1/2 -translate-y-1/2 min-w-[20px] h-5 flex items-center justify-center text-xs">
+                {activeWarnings}
+              </Badge>
+            )}
+          </div>
+        </button>
+      </SheetTrigger>
+      <SheetContent>
+        <SheetHeader>
+          <SheetTitle>Active Warnings</SheetTitle>
+        </SheetHeader>
+        <ScrollArea className="h-[calc(100vh-100px)] pr-4">
+          {warnings.length > 0 ? (
+            <div className="space-y-2 mt-4">
+              {warnings.map((warning) => (
+                <div
+                  key={warning.id}
+                  className={`p-4 rounded-lg border ${
+                    warning.type === 'temperature' ? 'bg-red-50 border-red-200' : 'bg-blue-50 border-blue-200'
+                  }`}
+                >
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <p className={`font-medium ${
+                        warning.type === 'temperature' ? 'text-red-700' : 'text-blue-700'
+                      }`}>
+                        Sensor {warning.sensorId}
+                      </p>
+                      <p className="text-sm text-slate-600 mt-1">{warning.message}</p>
+                    </div>
+                    <span className="text-xs text-slate-500">
+                      {new Date(warning.timestamp).toLocaleTimeString()}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center h-40 text-slate-500">
+              <AlertCircle className="h-8 w-8 mb-2 opacity-50" />
+              <p>No active warnings</p>
+            </div>
+          )}
+        </ScrollArea>
+      </SheetContent>
+    </Sheet>
+  );
 };
 
 const MetricCard = ({ icon: Icon, label, value, unit, color }: any) => (
@@ -119,7 +198,8 @@ const chartOptions = {
     y: {
       beginAtZero: false,
       grid: {
-        color: '#f1f5f9'
+        color: '#f1f5f9',
+        drawTicks: true
       },
       ticks: {
         padding: 5,
@@ -140,8 +220,16 @@ export default function Home() {
   const [sensorData, setSensorData] = useState<Record<string, SensorReading[]>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<Warning[]>([]);
 
   const AZURE_FUNCTION_URL = "https://sc21r2hcw2.azurewebsites.net/api/sensors";
+
+  const cleanupOldWarnings = (currentWarnings: Warning[]) => {
+    const now = Date.now();
+    return currentWarnings
+      .filter(warning => (now - new Date(warning.timestamp).getTime()) < WARNING_RETENTION_TIME)
+      .slice(-MAX_WARNINGS);
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -149,6 +237,8 @@ export default function Home() {
         const response = await fetch(AZURE_FUNCTION_URL);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data: SensorReading[] = await response.json();
+        
+        // Process sensor data
         setSensorData(prev => {
           const updated = { ...prev };
           data.forEach(reading => {
@@ -163,6 +253,37 @@ export default function Home() {
           });
           return updated;
         });
+
+        // Check for new warnings
+        setWarnings(prevWarnings => {
+          const newWarnings: Warning[] = [];
+          const timestamp = new Date().toISOString();
+          
+          data.forEach(reading => {
+            if (reading.temperature > TEMP_THRESHOLD) {
+              newWarnings.push({
+                id: `temp-${reading.sensor_id}-${timestamp}`,
+                sensorId: reading.sensor_id,
+                message: `High temperature alert: ${reading.temperature.toFixed(1)}°C`,
+                timestamp,
+                type: 'temperature',
+                value: reading.temperature
+              });
+            }
+            if (reading.co2_level > CO2_THRESHOLD) {
+              newWarnings.push({
+                id: `co2-${reading.sensor_id}-${timestamp}`,
+                sensorId: reading.sensor_id,
+                message: `High CO2 alert: ${reading.co2_level.toFixed(0)} ppm`,
+                timestamp,
+                type: 'co2',
+                value: reading.co2_level
+              });
+            }
+          });
+          
+          return cleanupOldWarnings([...prevWarnings, ...newWarnings]);
+        });
         
       } catch (err) {
         console.error("Fetch error:", err);
@@ -175,6 +296,15 @@ export default function Home() {
     fetchData();
     const interval = setInterval(fetchData, 5000);
     return () => clearInterval(interval);
+  }, []);
+
+  // Cleanup old warnings periodically
+  useEffect(() => {
+    const cleanup = setInterval(() => {
+      setWarnings(prevWarnings => cleanupOldWarnings(prevWarnings));
+    }, 60000); // Check every minute
+    
+    return () => clearInterval(cleanup);
   }, []);
 
   if (loading) {
@@ -201,6 +331,8 @@ export default function Home() {
 
   return (
     <main className="min-h-screen p-2 lg:p-4 bg-gradient-to-br from-slate-50 to-slate-100">
+      <NotificationBell warnings={warnings} />
+      
       <div className="max-w-[1920px] mx-auto">
         <header className="text-center mb-6">
           <h1 className="text-2xl lg:text-3xl font-bold mb-2 bg-gradient-to-r from-blue-600 to-blue-800 bg-clip-text text-transparent">
@@ -208,7 +340,7 @@ export default function Home() {
           </h1>
           <p className="text-slate-600">Real-time sensor data monitoring and analysis</p>
         </header>
-        
+
         <div className="space-y-6">
           {sortedSensorIds.map((sensorId) => {
             const readings = sensorData[sensorId];
@@ -224,29 +356,51 @@ export default function Home() {
             const charts = {
               temperature: {
                 labels: timeLabels,
-                datasets: [{
-                  label: "Temperature (°C)",
-                  data: readings.map(r => r.temperature),
-                  borderColor: "rgb(239, 68, 68)",
-                  backgroundColor: "rgba(239, 68, 68, 0.1)",
-                  tension: 0.4,
-                  borderWidth: 2,
-                  pointRadius: 0,
-                  pointHoverRadius: 4,
-                }]
+                datasets: [
+                  {
+                    label: "Temperature (°C)",
+                    data: readings.map(r => r.temperature),
+                    borderColor: "rgb(239, 68, 68)",
+                    backgroundColor: "rgba(239, 68, 68, 0.1)",
+                    tension: 0.4,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                  },
+                  {
+                    label: "Temperature Threshold",
+                    data: Array(timeLabels.length).fill(TEMP_THRESHOLD),
+                    borderColor: "rgba(239, 68, 68, 0.5)",
+                    borderDash: [5, 5],
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    fill: false
+                  }
+                ]
               },
               co2: {
                 labels: timeLabels,
-                datasets: [{
-                  label: "CO2 Level (ppm)",
-                  data: readings.map(r => r.co2_level),
-                  borderColor: "rgb(59, 130, 246)",
-                  backgroundColor: "rgba(59, 130, 246, 0.1)",
-                  tension: 0.4,
-                  borderWidth: 2,
-                  pointRadius: 0,
-                  pointHoverRadius: 4,
-                }]
+                datasets: [
+                  {
+                    label: "CO2 Level (ppm)",
+                    data: readings.map(r => r.co2_level),
+                    borderColor: "rgb(59, 130, 246)",
+                    backgroundColor: "rgba(59, 130, 246, 0.1)",
+                    tension: 0.4,
+                    borderWidth: 2,
+                    pointRadius: 0,
+                    pointHoverRadius: 4,
+                  },
+                  {
+                    label: "CO2 Threshold",
+                    data: Array(timeLabels.length).fill(CO2_THRESHOLD),
+                    borderColor: "rgba(239, 68, 68, 0.5)",
+                    borderDash: [5, 5],
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    fill: false
+                  }
+                ]
               }
             };
 
